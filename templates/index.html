@@ -7,12 +7,14 @@
     <style>
         html, body { height: 100%; margin: 0; overscroll-behavior: none; }
         body { font-family: -apple-system, sans-serif; display: flex; flex-direction: column;
-               padding: 0; box-sizing: border-box; gap: 4px;
+               padding: 0; box-sizing: border-box;
                padding-bottom: env(safe-area-inset-bottom); }
         #preview-wrap { flex: 1; min-height: 120px; overflow: auto;
-                        background: #000; -webkit-overflow-scrolling: touch; }
-        #preview { display: block; width: 100%; max-width: none; }
-        #preview.click-mode { cursor: crosshair; }
+                        background: #000; -webkit-overflow-scrolling: touch; position: relative; }
+        #preview { display: block; width: 100%; max-width: none;
+                   pointer-events: none;
+                   -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+                   -webkit-user-drag: none; }
         .badge { position: fixed; padding: 4px 10px; background: rgba(0,0,0,0.55);
                  color: #fff; font-size: 12px; border-radius: 12px;
                  pointer-events: none; z-index: 100; }
@@ -20,50 +22,84 @@
         #status { top: 8px; left: 8px; max-width: calc(100% - 80px);
                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #status:empty { display: none; }
-        .row { display: flex; gap: 4px; padding: 0 4px; }
-        .row > * { flex: 1; }
-        button { height: 36px; font-size: 13px; touch-action: manipulation; padding: 0; }
-        button.active { background: #0a84ff; color: #fff; border-color: #0a84ff; }
-        textarea { display: block; width: 100%; height: 40px; font-size: 16px; box-sizing: border-box;
-                   resize: none; border: none; border-top: 1px solid #ddd; padding: 8px; }
+        .input-row { display: flex; border-top: 1px solid #ddd; }
+        textarea { flex: 1; height: 40px; font-size: 16px; box-sizing: border-box;
+                   resize: none; border: none; padding: 8px; }
+        .row-btn { width: 48px; height: 40px; flex-shrink: 0; border: none;
+                   background: #f7f7f7; font-size: 18px; touch-action: manipulation; }
+        #appsBtn { border-right: 1px solid #ddd; }
+        #enterBtn { width: 56px; border-left: 1px solid #ddd; }
+        .row-btn:active { background: #ddd; }
+        #apps-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+                        display: none; z-index: 200; }
+        #apps-overlay.open { display: block; }
+        #apps-panel { position: absolute; left: 0; right: 0; bottom: 0;
+                      max-height: 70vh; background: #fff; border-top-left-radius: 14px;
+                      border-top-right-radius: 14px; padding: 8px 0
+                      calc(env(safe-area-inset-bottom) + 8px);
+                      display: flex; flex-direction: column; }
+        #apps-panel-head { display: flex; align-items: center; justify-content: space-between;
+                           padding: 8px 14px; border-bottom: 1px solid #eee; }
+        #apps-panel-head .title { font-size: 14px; color: #333; font-weight: 600; }
+        #apps-close { background: none; border: none; font-size: 18px; color: #555;
+                      padding: 4px 8px; }
+        #apps-list { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        .app-item { display: flex; align-items: center; gap: 12px;
+                    padding: 10px 14px; border-bottom: 1px solid #f1f1f1;
+                    touch-action: manipulation; }
+        .app-item:active { background: #eef; }
+        .app-item.active { background: #e8f0ff; }
+        .app-item img { width: 32px; height: 32px; flex-shrink: 0; }
+        .app-item .ph { width: 32px; height: 32px; flex-shrink: 0;
+                        background: #ddd; border-radius: 6px; }
+        .app-item .name { flex: 1; font-size: 15px; color: #222;
+                          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .app-item .dot { width: 8px; height: 8px; border-radius: 50%;
+                         background: #2a8cff; flex-shrink: 0; }
+        .app-item:not(.active) .dot { visibility: hidden; }
     </style>
 </head>
 <body>
     <div id="preview-wrap"><img id="preview" alt="Mac画面プレビュー"></div>
     <div id="zoom-indicator" class="badge">100%</div>
     <div id="status" class="badge"></div>
-    <textarea id="input" placeholder="ここに入力（⌫はキーボードから）" autofocus></textarea>
-    <div class="row">
-        <button onclick="setZoom(zoom / 1.25)">−</button>
-        <button onclick="setZoom(zoom * 1.25)">＋</button>
-        <button onclick="sendEnter()">↵</button>
-        <button id="clickBtn" onclick="toggleClickMode()">クリック</button>
-        <button id="followBtn" onclick="toggleFollow()">追従</button>
-        <button onclick="clearBuffer()">クリア</button>
+    <div class="input-row">
+        <button id="appsBtn" class="row-btn" onclick="openApps()" aria-label="アプリ切替">⊞</button>
+        <textarea id="input" placeholder="入力 / Wタップ=クリック / ピンチ=ズーム / ⏎=改行" autofocus></textarea>
+        <button id="enterBtn" class="row-btn" onclick="sendEnter()">↵</button>
+    </div>
+    <div id="apps-overlay" onclick="closeAppsIfBackdrop(event)">
+        <div id="apps-panel">
+            <div id="apps-panel-head">
+                <span class="title">アプリ切替</span>
+                <button id="apps-close" onclick="closeApps()" aria-label="閉じる">✕</button>
+            </div>
+            <div id="apps-list"></div>
+        </div>
     </div>
 
     <script>
+        // Zero-width space sentinel: keeps the textarea "non-empty" so iOS Safari
+        // fires beforeinput(deleteContentBackward) even when the user has nothing
+        // visible to delete.
+        const SENTINEL = '​';
+
         const input = document.getElementById('input');
         const status = document.getElementById('status');
         const preview = document.getElementById('preview');
-        const clickBtn = document.getElementById('clickBtn');
-        const followBtn = document.getElementById('followBtn');
         const previewWrap = document.getElementById('preview-wrap');
         const zoomIndicator = document.getElementById('zoom-indicator');
+
         let isComposing = false;
-        let lastValue = '';
         let zoom = 1;
-        let clickMode = false;
-        let followMode = false;
-        let followTimer = null;
         let macWidth = 0, macHeight = 0;
         let queue = Promise.resolve();
 
+        // ---- Network helpers ----
         function enqueue(fn) {
             queue = queue.then(fn).catch(e => { status.textContent = '送信失敗: ' + e.message; });
             return queue;
         }
-
         async function postJson(url, body) {
             const opts = {method: 'POST'};
             if (body !== undefined) {
@@ -75,117 +111,236 @@
             return res;
         }
 
+        // ---- Zoom ----
         function setZoom(z) {
             zoom = Math.max(0.5, Math.min(z, 5));
             preview.style.width = (zoom * 100) + '%';
             zoomIndicator.textContent = Math.round(zoom * 100) + '%';
         }
 
-        function postSend(text) {
-            return enqueue(async () => {
-                await postJson('/send', {text});
-                status.textContent = '送信: ' + JSON.stringify(text);
-            });
-        }
+        // ---- Auto-scroll to Mac caret after each user action ----
+        let autoScrolling = false;
+        let lastManualScrollAt = 0;
+        const MANUAL_SCROLL_PAUSE_MS = 2500;
 
-        function postBackspace(count) {
-            return enqueue(async () => {
-                await postJson('/backspace', {count});
-                status.textContent = '⌫ × ' + count;
-            });
-        }
-
-        function syncDelta() {
-            const cur = input.value;
-            if (cur === lastValue) return;
-            if (cur.length > lastValue.length && cur.startsWith(lastValue)) {
-                postSend(cur.slice(lastValue.length));
-            } else if (cur.length < lastValue.length && lastValue.startsWith(cur)) {
-                postBackspace(lastValue.length - cur.length);
-            } else {
-                if (lastValue.length > 0) postBackspace(lastValue.length);
-                if (cur.length > 0) postSend(cur);
-            }
-            lastValue = cur;
-        }
-
-        input.addEventListener('compositionstart', () => { isComposing = true; });
-        input.addEventListener('compositionend', () => {
-            isComposing = false;
-            setTimeout(syncDelta, 0);
-        });
-        input.addEventListener('input', () => {
-            if (isComposing) return;
-            syncDelta();
+        previewWrap.addEventListener('scroll', () => {
+            if (!autoScrolling) lastManualScrollAt = Date.now();
         });
 
-        function sendEnter() {
-            enqueue(async () => {
-                await postJson('/enter');
-                status.textContent = 'Enter送信';
-            });
-        }
-
-        function clearBuffer() {
-            input.value = '';
-            lastValue = '';
-            status.textContent = 'バッファをクリア';
-        }
-
-        function toggleClickMode() {
-            clickMode = !clickMode;
-            clickBtn.classList.toggle('active', clickMode);
-            preview.classList.toggle('click-mode', clickMode);
-            status.textContent = 'クリック: ' + (clickMode ? 'ON' : 'OFF');
-        }
-
-        const FOLLOW_ZOOM = 2.5;
-
-        function toggleFollow() {
-            followMode = !followMode;
-            followBtn.classList.toggle('active', followMode);
-            status.textContent = '追従: ' + (followMode ? 'ON' : 'OFF');
-            if (followMode) {
-                if (zoom < FOLLOW_ZOOM) setZoom(FOLLOW_ZOOM);
-                pollFocus();
-                followTimer = setInterval(pollFocus, 800);
-            } else if (followTimer) {
-                clearInterval(followTimer);
-                followTimer = null;
-            }
-        }
-
-        async function pollFocus() {
+        async function scrollToCaret() {
             if (!macWidth) return;
+            if (Date.now() - lastManualScrollAt < MANUAL_SCROLL_PAUSE_MS) return;
             try {
                 const res = await fetch('/focus');
                 const {x, y} = await res.json();
                 if (x == null || y == null) return;
                 const imgX = (x / macWidth) * preview.clientWidth;
                 const imgY = (y / macHeight) * preview.clientHeight;
-                previewWrap.scrollTo({
-                    left: imgX - previewWrap.clientWidth / 2,
-                    top: imgY - previewWrap.clientHeight / 2,
-                    behavior: 'smooth'
-                });
+                // Only scroll when the caret is (about to be) outside the viewport.
+                // Centering on every keystroke is disorienting; this just keeps it on screen.
+                const margin = 60;
+                const vw = previewWrap.clientWidth;
+                const vh = previewWrap.clientHeight;
+                const left = previewWrap.scrollLeft;
+                const top = previewWrap.scrollTop;
+                let nextLeft = left, nextTop = top, need = false;
+                if (imgX < left + margin) { nextLeft = imgX - margin; need = true; }
+                else if (imgX > left + vw - margin) { nextLeft = imgX - vw + margin; need = true; }
+                if (imgY < top + margin) { nextTop = imgY - margin; need = true; }
+                else if (imgY > top + vh - margin) { nextTop = imgY - vh + margin; need = true; }
+                if (!need) return;
+                autoScrolling = true;
+                previewWrap.scrollTo({left: nextLeft, top: nextTop, behavior: 'smooth'});
+                setTimeout(() => { autoScrolling = false; }, 400);
+            } catch (e) { /* ignore */ }
+        }
+
+        // ---- Action posters ----
+        function postSend(text) {
+            return enqueue(async () => {
+                await postJson('/send', {text});
+                status.textContent = '送信: ' + JSON.stringify(text);
+                scrollToCaret();
+            });
+        }
+        function postBackspace(count) {
+            return enqueue(async () => {
+                await postJson('/backspace', {count});
+                status.textContent = '⌫ × ' + count;
+                scrollToCaret();
+            });
+        }
+        function sendEnter() {
+            return enqueue(async () => {
+                await postJson('/enter');
+                status.textContent = 'Enter';
+                scrollToCaret();
+            });
+        }
+
+        // ---- App switcher ----
+        const appsOverlay = document.getElementById('apps-overlay');
+        const appsList = document.getElementById('apps-list');
+
+        async function openApps() {
+            appsList.innerHTML = '<div style="padding:14px;color:#888;">読み込み中...</div>';
+            appsOverlay.classList.add('open');
+            try {
+                const res = await fetch('/apps');
+                const {apps} = await res.json();
+                renderApps(apps || []);
             } catch (e) {
-                // ignore transient errors
+                appsList.innerHTML = '<div style="padding:14px;color:#c33;">取得失敗: ' + e.message + '</div>';
+            }
+        }
+        function closeApps() { appsOverlay.classList.remove('open'); }
+        function closeAppsIfBackdrop(e) { if (e.target === appsOverlay) closeApps(); }
+
+        function renderApps(apps) {
+            if (!apps.length) {
+                appsList.innerHTML = '<div style="padding:14px;color:#888;">アプリが見つかりません</div>';
+                return;
+            }
+            appsList.innerHTML = '';
+            for (const a of apps) {
+                const row = document.createElement('div');
+                row.className = 'app-item' + (a.active ? ' active' : '');
+                const icon = a.icon
+                    ? `<img src="${a.icon}" alt="">`
+                    : '<div class="ph"></div>';
+                row.innerHTML = `${icon}<span class="name"></span><span class="dot"></span>`;
+                row.querySelector('.name').textContent = a.name;
+                row.addEventListener('click', () => activateApp(a.pid, a.name));
+                appsList.appendChild(row);
             }
         }
 
-        preview.addEventListener('click', (e) => {
-            if (!clickMode || !macWidth) return;
+        async function activateApp(pid, name) {
+            closeApps();
+            try {
+                await postJson('/activate', {pid});
+                status.textContent = '切替: ' + name;
+                // The next interval poll is up to 1s away; refresh now and again
+                // shortly after so the new front window is reflected immediately.
+                refreshPreview();
+                setTimeout(refreshPreview, 200);
+            } catch (e) {
+                status.textContent = '切替失敗: ' + e.message;
+            }
+        }
+
+        // ---- Sentinel-backed input handling ----
+        function resetInput() {
+            input.value = SENTINEL;
+            try {
+                input.setSelectionRange(SENTINEL.length, SENTINEL.length);
+            } catch (e) { /* setSelectionRange may throw if not focused */ }
+        }
+        function flushPendingText() {
+            let text = input.value;
+            if (text.startsWith(SENTINEL)) text = text.slice(SENTINEL.length);
+            if (text) postSend(text);
+            resetInput();
+        }
+
+        input.addEventListener('beforeinput', (e) => {
+            if (isComposing) return;
+            const t = e.inputType;
+            if (!t) return;
+            if (t.startsWith('delete')) {
+                e.preventDefault();
+                postBackspace(1);
+                if (input.value !== SENTINEL) resetInput();
+            }
+            // insertLineBreak / insertParagraph are intentionally NOT intercepted —
+            // the resulting newline is forwarded as a pasted '\n' character via the
+            // input handler below, which is what most editors expect for "Return".
+        });
+        input.addEventListener('input', () => {
+            if (isComposing) return;
+            flushPendingText();
+        });
+        input.addEventListener('compositionstart', () => { isComposing = true; });
+        input.addEventListener('compositionend', () => {
+            isComposing = false;
+            flushPendingText();
+        });
+        // Keep cursor after sentinel if user moves it before typing
+        input.addEventListener('focus', () => {
+            if (input.value === '') resetInput();
+        });
+
+        // ---- Pinch-to-zoom (iOS Safari gesture events) ----
+        let pinchStartZoom = 1;
+        previewWrap.addEventListener('gesturestart', (e) => {
+            e.preventDefault();
+            pinchStartZoom = zoom;
+        });
+        previewWrap.addEventListener('gesturechange', (e) => {
+            e.preventDefault();
+            setZoom(pinchStartZoom * e.scale);
+        });
+        previewWrap.addEventListener('gestureend', (e) => { e.preventDefault(); });
+
+        // ---- Double-tap = click (touch is on the wrap, not the img,
+        //      so iOS does not trigger its image-preview gesture) ----
+        const DOUBLE_TAP_MS = 300;
+        const TAP_MOVE_TOL = 10;
+        const DOUBLE_TAP_DIST = 30;
+        let touchStartPos = null;
+        let lastTapAt = 0;
+        let lastTapPos = null;
+
+        previewWrap.addEventListener('contextmenu', (e) => e.preventDefault());
+        previewWrap.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) { touchStartPos = null; return; }
+            const t = e.touches[0];
+            touchStartPos = {x: t.clientX, y: t.clientY};
+        }, {passive: true});
+        previewWrap.addEventListener('touchend', (e) => {
+            if (!touchStartPos || e.changedTouches.length !== 1) {
+                touchStartPos = null;
+                return;
+            }
+            const t = e.changedTouches[0];
+            const dx = t.clientX - touchStartPos.x;
+            const dy = t.clientY - touchStartPos.y;
+            touchStartPos = null;
+            if (dx * dx + dy * dy > TAP_MOVE_TOL * TAP_MOVE_TOL) {
+                lastTapAt = 0;
+                return;
+            }
+            const now = Date.now();
+            const pos = {x: t.clientX, y: t.clientY};
+            if (lastTapAt && now - lastTapAt < DOUBLE_TAP_MS && lastTapPos) {
+                const ldx = pos.x - lastTapPos.x;
+                const ldy = pos.y - lastTapPos.y;
+                if (ldx * ldx + ldy * ldy < DOUBLE_TAP_DIST * DOUBLE_TAP_DIST) {
+                    fireClick(pos);
+                    lastTapAt = 0;
+                    return;
+                }
+            }
+            lastTapAt = now;
+            lastTapPos = pos;
+        }, {passive: true});
+
+        function fireClick(pos) {
+            if (!macWidth) return;
             const rect = preview.getBoundingClientRect();
-            const rx = (e.clientX - rect.left) / rect.width;
-            const ry = (e.clientY - rect.top) / rect.height;
+            const rx = (pos.x - rect.left) / rect.width;
+            const ry = (pos.y - rect.top) / rect.height;
+            if (rx < 0 || rx > 1 || ry < 0 || ry > 1) return;
             const x = Math.round(rx * macWidth);
             const y = Math.round(ry * macHeight);
             enqueue(async () => {
                 await postJson('/click', {x, y});
                 status.textContent = `クリック (${x}, ${y})`;
             });
-        });
+            navigator.vibrate?.(20);
+        }
 
+        // ---- Edge swipe blocker ----
         let touchStartX = 0;
         document.addEventListener('touchstart', (e) => {
             touchStartX = e.touches[0].clientX;
@@ -199,6 +354,7 @@
             }
         }, {passive: false});
 
+        // ---- Screenshot polling ----
         function refreshPreview() {
             const next = new Image();
             next.onload = () => { preview.src = next.src; };
@@ -207,6 +363,8 @@
         setInterval(refreshPreview, 1000);
         refreshPreview();
 
+        // ---- Init ----
+        resetInput();
         (async () => {
             try {
                 const res = await fetch('/size');

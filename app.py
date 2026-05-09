@@ -58,6 +58,18 @@ def focus():
     return jsonify(x=pos[0], y=pos[1])
 
 
+@app.route('/apps')
+def apps_list():
+    return jsonify(apps=mac_io.list_apps())
+
+
+@app.route('/activate', methods=['POST'])
+def activate():
+    data = request.get_json(silent=True) or {}
+    ok = mac_io.activate_app(int(data['pid']))
+    return jsonify(status='ok' if ok else 'fail')
+
+
 @app.route('/screenshot')
 def screenshot():
     width = int(os.environ.get('SCREENSHOT_WIDTH', '1800'))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import time
 
@@ -109,6 +110,81 @@ def caret_position() -> tuple[int, int] | None:
     except Exception:
         return None
     return None
+
+
+_icon_cache: dict[int, str] = {}
+
+
+def _ns_image_to_data_url(image, size: int = 64) -> str | None:
+    if image is None:
+        return None
+    try:
+        from AppKit import NSBitmapImageRep
+    except Exception:
+        return None
+    try:
+        image.setSize_((size, size))
+        tiff = image.TIFFRepresentation()
+        if tiff is None:
+            return None
+        rep = NSBitmapImageRep.imageRepWithData_(tiff)
+        if rep is None:
+            return None
+        # NSBitmapImageFileTypePNG = 4
+        png = rep.representationUsingType_properties_(4, None)
+        if png is None:
+            return None
+        b64 = base64.b64encode(bytes(png)).decode('ascii')
+        return f'data:image/png;base64,{b64}'
+    except Exception:
+        return None
+
+
+def list_apps() -> list[dict]:
+    """Return regular GUI apps currently running, with name/pid/active/icon."""
+    try:
+        from AppKit import NSWorkspace
+    except Exception:
+        return []
+    ws = NSWorkspace.sharedWorkspace()
+    out: list[dict] = []
+    live_pids: set[int] = set()
+    for app in ws.runningApplications():
+        # NSApplicationActivationPolicyRegular = 0 (skip background/agent apps)
+        if app.activationPolicy() != 0:
+            continue
+        pid = int(app.processIdentifier())
+        live_pids.add(pid)
+        icon_url = _icon_cache.get(pid)
+        if icon_url is None:
+            icon_url = _ns_image_to_data_url(app.icon())
+            if icon_url:
+                _icon_cache[pid] = icon_url
+        out.append({
+            'pid': pid,
+            'name': app.localizedName() or '?',
+            'active': bool(app.isActive()),
+            'icon': icon_url,
+        })
+    # Drop icons for apps that have quit
+    for pid in list(_icon_cache.keys()):
+        if pid not in live_pids:
+            _icon_cache.pop(pid, None)
+    out.sort(key=lambda a: (not a['active'], a['name'].lower()))
+    return out
+
+
+def activate_app(pid: int) -> bool:
+    """Bring the given app's PID to the front."""
+    try:
+        from AppKit import NSRunningApplication
+    except Exception:
+        return False
+    app = NSRunningApplication.runningApplicationWithProcessIdentifier_(int(pid))
+    if app is None:
+        return False
+    # NSApplicationActivateAllWindows (1) | NSApplicationActivateIgnoringOtherApps (2)
+    return bool(app.activateWithOptions_(3))
 
 
 def grab_screenshot_jpeg(width: int, quality: int) -> bytes:
